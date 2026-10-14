@@ -185,7 +185,7 @@ async function runTests() {
 
   // Test 8: WooCommerce Client Credential Check
   console.log('Test 8: WooCommerce client credential security check');
-  const unconfiguredClient = new WooCommerceClient({});
+  const unconfiguredClient = new WooCommerceClient({ storeUrl: '', consumerKey: '', consumerSecret: '' });
   assert.equal(unconfiguredClient.hasCredentials(), false);
   const testConn = await unconfiguredClient.testConnection();
   assert.equal(testConn.success, false);

@@ -29,6 +29,7 @@ export default function SyncCenterPage() {
     syncAllPending,
     importFromCurrentProvider,
     activeProvider,
+    serverConfig,
     isSyncing,
   } = useCatalog();
 
@@ -44,10 +45,11 @@ export default function SyncCenterPage() {
 
   const showNotification = (msg: string) => {
     setNotification(msg);
-    setTimeout(() => setNotification(null), 4000);
+    setTimeout(() => setNotification(null), 5000);
   };
 
   const handleTestConnection = async () => {
+    if (isTesting) return; // Prevent duplicate requests
     setIsTesting(true);
     setTestResult(null);
     try {
@@ -59,14 +61,20 @@ export default function SyncCenterPage() {
   };
 
   const handleSyncAll = async () => {
+    if (isSyncing) return;
     const res = await syncAllPending();
-    showNotification(`Batch sync completed: ${res.succeeded} updated, ${res.failed} failed.`);
+    showNotification(`Batch sync completed: ${res.succeeded} updated, ${res.failed} failed out of ${res.total} products.`);
   };
 
   const handleImport = async () => {
+    if (isSyncing) return;
     try {
-      const count = await importFromCurrentProvider();
-      showNotification(`Successfully imported ${count} remote products.`);
+      const stats = await importFromCurrentProvider();
+      showNotification(
+        providerMode === 'demo'
+          ? `Demo Import: ${stats.imported} added, ${stats.updated} updated (${stats.total} total sample products).`
+          : `WooCommerce Import: ${stats.imported} new products imported, ${stats.updated} existing products updated (${stats.total} remote items).`
+      );
     } catch (err: any) {
       showNotification(`Import failed: ${err.message}`);
     }
@@ -107,8 +115,8 @@ export default function SyncCenterPage() {
             disabled={isSyncing}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
           >
-            <DownloadCloud className="h-4 w-4 text-slate-500" />
-            <span>Import Products</span>
+            <DownloadCloud className={`h-4 w-4 text-slate-500 ${isSyncing ? 'animate-bounce' : ''}`} />
+            <span>{isSyncing ? 'Importing...' : 'Import Products'}</span>
           </button>
 
           <button
@@ -152,7 +160,7 @@ export default function SyncCenterPage() {
                 <h3 className="text-sm font-semibold text-slate-900">
                   {providerMode === 'demo'
                     ? 'Local Sandbox Provider (Simulated Sync)'
-                    : 'WooCommerce REST API Provider (Live Channel)'}
+                    : 'WooCommerce Live REST API Provider'}
                 </h3>
                 <span
                   className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
@@ -167,7 +175,9 @@ export default function SyncCenterPage() {
               <p className="text-xs text-slate-500 mt-0.5">
                 {providerMode === 'demo'
                   ? 'Simulates remote latency and mirror state. Clearly distinguished from genuine network writes.'
-                  : 'Communicates with WooCommerce REST API v3 via secure server-side route handlers.'}
+                  : serverConfig?.storeUrl
+                  ? `Connected to: ${serverConfig.storeUrl} (via secure server-side route handlers)`
+                  : 'Requires WOOCOMMERCE_STORE_URL, WOOCOMMERCE_CONSUMER_KEY, and WOOCOMMERCE_CONSUMER_SECRET in .env.local.'}
               </p>
             </div>
           </div>
@@ -210,11 +220,13 @@ export default function SyncCenterPage() {
               <div className="font-semibold">{testResult.message}</div>
               {testResult.storeName && (
                 <div className="text-[11px] text-slate-600 mt-0.5">
-                  Endpoint: {testResult.storeName} • Engine: {testResult.version}
+                  Endpoint: {testResult.storeName}
+                  {testResult.version && ` • Engine: ${testResult.version}`}
+                  {testResult.environmentDetails && ` • ${testResult.environmentDetails}`}
                 </div>
               )}
               {testResult.error && (
-                <div className="font-mono text-[11px] text-rose-700 mt-1 bg-white/60 p-1.5 rounded">
+                <div className="font-mono text-[11px] text-rose-700 mt-1 bg-white/70 p-2 rounded border border-rose-200">
                   {testResult.error}
                 </div>
               )}

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { WooCommerceClient } from '@/lib/woocommerce';
 import { mapProductToWooCommerce } from '@/lib/product-mapper';
 import { ProductSchema } from '@/lib/validation';
+import { calculateProductCompleteness } from '@/lib/completeness';
 
 export async function PUT(
   req: NextRequest,
@@ -12,7 +13,10 @@ export async function PUT(
     const numericId = parseInt(id, 10);
 
     if (isNaN(numericId)) {
-      return NextResponse.json({ error: 'Invalid WooCommerce product ID. Must be numeric.' }, { status: 400 });
+      return NextResponse.json(
+        { error: `Invalid WooCommerce product ID '${id}'. Must be a numeric WooCommerce ID.` },
+        { status: 400 }
+      );
     }
 
     const body = await req.json();
@@ -31,10 +35,21 @@ export async function PUT(
       }, { status: 422 });
     }
 
+    // Completeness validation rule: prevent publishing if incomplete!
+    if (product.status === 'published') {
+      const completeness = calculateProductCompleteness(product);
+      if (!completeness.canPublish) {
+        return NextResponse.json({
+          error: `Cannot update product to published status: ${completeness.publishBlockers[0] || 'Required attributes missing'}. Set status to 'draft' or complete all required category fields.`,
+          publishBlockers: completeness.publishBlockers,
+        }, { status: 422 });
+      }
+    }
+
     const client = new WooCommerceClient(credentials);
     if (!client.hasCredentials()) {
       return NextResponse.json({
-        error: 'WooCommerce credentials not configured. Please supply Store URL, Consumer Key, and Consumer Secret.',
+        error: 'WooCommerce credentials not configured. Please configure credentials in .env.local.',
       }, { status: 400 });
     }
 

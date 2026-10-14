@@ -4,19 +4,20 @@ import { ConnectionTestResult, ICatalogProvider, SyncResult } from './types';
 export class WooCommerceProvider implements ICatalogProvider {
   name = 'WooCommerce Live REST API';
   isDemo = false;
-  private credentials?: WooCommerceCredentials;
+  private customStoreUrl?: string;
 
-  constructor(credentials?: WooCommerceCredentials) {
-    this.credentials = credentials;
+  constructor(storeUrl?: string) {
+    this.customStoreUrl = storeUrl;
   }
 
-  setCredentials(credentials?: WooCommerceCredentials) {
-    this.credentials = credentials;
+  setStoreUrl(url?: string) {
+    this.customStoreUrl = url;
   }
 
   async syncProduct(product: Product): Promise<SyncResult> {
     try {
-      const isUpdate = Boolean(product.wooCommerceId);
+      // Use existing WooCommerce ID for remote update, or POST for new remote product
+      const isUpdate = Boolean(product.wooCommerceId && typeof product.wooCommerceId === 'number' && product.wooCommerceId > 0);
       const url = isUpdate
         ? `/api/woocommerce/products/${product.wooCommerceId}`
         : `/api/woocommerce/products`;
@@ -28,7 +29,7 @@ export class WooCommerceProvider implements ICatalogProvider {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           product,
-          credentials: this.credentials,
+          credentials: this.customStoreUrl ? { storeUrl: this.customStoreUrl } : undefined,
         }),
       });
 
@@ -57,18 +58,18 @@ export class WooCommerceProvider implements ICatalogProvider {
         success: false,
         syncStatus: 'failed',
         simulated: false,
-        message: err.message || 'Network error attempting to contact WooCommerce integration endpoint',
+        message: err.message || 'Network error communicating with WooCommerce API route',
         errorDetails: String(err),
       };
     }
   }
 
-  async testConnection(): Promise<ConnectionTestResult> {
+  async testConnection(customCredentials?: Partial<WooCommerceCredentials>): Promise<ConnectionTestResult> {
     try {
       const res = await fetch('/api/woocommerce/test', {
-        method: 'POST',
+        method: customCredentials ? 'POST' : 'GET',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(this.credentials || {}),
+        body: customCredentials ? JSON.stringify(customCredentials) : undefined,
       });
 
       const data = await res.json().catch(() => ({}));
@@ -77,9 +78,12 @@ export class WooCommerceProvider implements ICatalogProvider {
         return {
           connected: true,
           provider: 'woocommerce',
-          message: data.message || 'WooCommerce API connection confirmed active',
+          message: data.message || 'WooCommerce API connection confirmed active.',
           storeName: data.storeUrl || 'Connected WooCommerce Store',
           version: 'WooCommerce REST API v3',
+          environmentDetails: data.details
+            ? `${data.details.totalProductsInStore} remote products found`
+            : undefined,
         };
       }
 
@@ -87,6 +91,7 @@ export class WooCommerceProvider implements ICatalogProvider {
         connected: false,
         provider: 'woocommerce',
         message: data.message || 'Unable to establish authenticated connection to WooCommerce',
+        storeName: data.storeUrl,
         error: data.error || data.message,
       };
     } catch (err: any) {
@@ -100,16 +105,16 @@ export class WooCommerceProvider implements ICatalogProvider {
   }
 
   async importProducts(): Promise<Product[]> {
-    const query = new URLSearchParams();
-    if (this.credentials?.storeUrl) query.set('storeUrl', this.credentials.storeUrl);
-    if (this.credentials?.consumerKey) query.set('consumerKey', this.credentials.consumerKey);
-    if (this.credentials?.consumerSecret) query.set('consumerSecret', this.credentials.consumerSecret);
+    const query = new URLSearchParams({ all: 'true' });
+    if (this.customStoreUrl) {
+      query.set('storeUrl', this.customStoreUrl);
+    }
 
     const res = await fetch(`/api/woocommerce/products?${query.toString()}`);
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok || !data.success) {
-      throw new Error(data.error || 'Failed to import remote products from WooCommerce store');
+      throw new Error(data.error || `Failed to import remote products (HTTP ${res.status})`);
     }
 
     return data.products || [];

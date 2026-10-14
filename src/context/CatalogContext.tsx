@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import {
   CategoryRule,
   Product,
@@ -18,23 +18,39 @@ import { WooCommerceProvider, wooCommerceProvider } from '@/lib/providers/woocom
 import { ICatalogProvider } from '@/lib/providers/types';
 import { fetchDummyJsonProducts } from '@/lib/dummyjson';
 
+export interface ImportStats {
+  imported: number;
+  updated: number;
+  skipped: number;
+  total: number;
+}
+
+export interface ServerConfig {
+  isConfigured: boolean;
+  storeUrl?: string;
+  hasConsumerKey: boolean;
+  hasConsumerSecret: boolean;
+  maskedKey?: string;
+  isDemoModeDefault: boolean;
+}
+
 interface CatalogContextType {
   products: Product[];
   syncLogs: SyncLog[];
   categoryRules: CategoryRule[];
   providerMode: ProviderMode;
-  credentials: WooCommerceCredentials;
+  serverConfig: ServerConfig | null;
   activeProvider: ICatalogProvider;
   isSyncing: boolean;
   setProviderMode: (mode: ProviderMode) => void;
-  setCredentials: (creds: WooCommerceCredentials) => void;
+  refreshServerConfig: () => Promise<ServerConfig | null>;
   addProduct: (data: ProductCreate) => Product;
   updateProduct: (id: string, updates: ProductUpdate) => Product;
   deleteProduct: (id: string) => boolean;
   syncSingleProduct: (id: string) => Promise<{ success: boolean; message: string }>;
   syncAllPending: () => Promise<{ total: number; succeeded: number; failed: number }>;
-  importDummyJson: () => Promise<number>;
-  importFromCurrentProvider: () => Promise<number>;
+  importDummyJson: () => Promise<ImportStats>;
+  importFromCurrentProvider: () => Promise<ImportStats>;
   updateCategoryRules: (rules: CategoryRule[]) => void;
   resetToDemoSeed: () => void;
 }
@@ -42,11 +58,10 @@ interface CatalogContextType {
 const CatalogContext = createContext<CatalogContextType | null>(null);
 
 const STORAGE_KEYS = {
-  PRODUCTS: 'catalog_sync_products_v1',
-  LOGS: 'catalog_sync_logs_v1',
-  RULES: 'catalog_sync_rules_v1',
-  MODE: 'catalog_sync_mode_v1',
-  CREDS: 'catalog_sync_creds_v1',
+  PRODUCTS: 'catalog_sync_products_v2',
+  LOGS: 'catalog_sync_logs_v2',
+  RULES: 'catalog_sync_rules_v2',
+  MODE: 'catalog_sync_mode_v2',
 };
 
 export function CatalogProvider({ children }: { children: React.ReactNode }) {
@@ -54,15 +69,26 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const [syncLogs, setSyncLogs] = useState<SyncLog[]>(INITIAL_SYNC_LOGS);
   const [categoryRules, setCategoryRules] = useState<CategoryRule[]>(DEFAULT_CATEGORY_RULES);
   const [providerMode, setProviderModeState] = useState<ProviderMode>('demo');
-  const [credentials, setCredentialsState] = useState<WooCommerceCredentials>({
-    storeUrl: '',
-    consumerKey: '',
-    consumerSecret: '',
-  });
+  const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
 
-  // Initialize from LocalStorage
+  // Fetch server configuration status (safe: never contains secrets)
+  const refreshServerConfig = useCallback(async (): Promise<ServerConfig | null> => {
+    try {
+      const res = await fetch('/api/woocommerce/config', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        setServerConfig(data);
+        return data;
+      }
+    } catch (e) {
+      console.warn('Could not read server WooCommerce configuration:', e);
+    }
+    return null;
+  }, []);
+
+  // Initialize from LocalStorage and server configuration
   useEffect(() => {
     try {
       const storedProds = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
@@ -81,24 +107,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       }
 
       const storedMode = localStorage.getItem(STORAGE_KEYS.MODE) as ProviderMode;
-      if (storedMode) {
+      if (storedMode === 'demo' || storedMode === 'woocommerce') {
         setProviderModeState(storedMode);
-      }
-
-      const storedCreds = localStorage.getItem(STORAGE_KEYS.CREDS);
-      if (storedCreds) {
-        const parsed = JSON.parse(storedCreds);
-        setCredentialsState(parsed);
-        wooCommerceProvider.setCredentials(parsed);
       }
     } catch (e) {
       console.error('Failed reading from localStorage:', e);
     } finally {
       setIsHydrated(true);
+      refreshServerConfig();
     }
-  }, []);
+  }, [refreshServerConfig]);
 
-  // Save to LocalStorage whenever state changes (only after initial hydration)
+  // Save to LocalStorage whenever state changes (only non-sensitive catalog data)
   useEffect(() => {
     if (!isHydrated) return;
     try {
@@ -144,14 +164,6 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
 
   const setProviderMode = (mode: ProviderMode) => {
     setProviderModeState(mode);
-  };
-
-  const setCredentials = (creds: WooCommerceCredentials) => {
-    setCredentialsState(creds);
-    wooCommerceProvider.setCredentials(creds);
-    if (isHydrated) {
-      localStorage.setItem(STORAGE_KEYS.CREDS, JSON.stringify(creds));
-    }
   };
 
   const addProduct = (data: ProductCreate): Product => {
@@ -287,61 +299,160 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const importDummyJson = async (): Promise<number> => {
+  const importDummyJson = async (): Promise<ImportStats> => {
     setIsSyncing(true);
     try {
-      const imported = await fetchDummyJsonProducts(8);
-      // Filter out any duplicates by SKU or name
-      const existingSkus = new Set(products.map((p) => p.sku));
-      const fresh = imported.filter((p) => !existingSkus.has(p.sku));
+      const importedList = await fetchDummyJsonProducts(8);
+      let importedCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
 
-      if (fresh.length > 0) {
-        setProducts((prev) => [...fresh, ...prev]);
+      setProducts((prev) => {
+        const nextProducts = [...prev];
+        for (const remote of importedList) {
+          const existingIndex = nextProducts.findIndex(
+            (p) => p.sku.toUpperCase() === remote.sku.toUpperCase()
+          );
 
-        // Add log
-        const log: SyncLog = {
-          id: `log_import_${Date.now()}`,
-          productId: 'bulk',
-          productName: `DummyJSON Bulk Import (${fresh.length} items)`,
-          sku: 'BATCH',
-          provider: 'demo',
-          status: 'simulated',
-          action: 'import',
-          timestamp: new Date().toISOString(),
-          message: `Successfully imported ${fresh.length} realistic demo products into local catalog`,
-        };
-        setSyncLogs((prev) => [log, ...prev]);
-      }
-      return fresh.length;
+          if (existingIndex >= 0) {
+            // Update existing record
+            nextProducts[existingIndex] = {
+              ...nextProducts[existingIndex],
+              regularPrice: remote.regularPrice,
+              stockQuantity: remote.stockQuantity,
+              updatedAt: new Date().toISOString(),
+            };
+            updatedCount++;
+          } else {
+            // Add new
+            nextProducts.unshift(remote);
+            importedCount++;
+          }
+        }
+        return nextProducts;
+      });
+
+      const stats: ImportStats = {
+        imported: importedCount,
+        updated: updatedCount,
+        skipped: skippedCount,
+        total: importedList.length,
+      };
+
+      const log: SyncLog = {
+        id: `log_import_${Date.now()}`,
+        productId: 'bulk',
+        productName: `DummyJSON Demo Catalog Import`,
+        sku: 'BATCH',
+        provider: 'demo',
+        status: 'simulated',
+        action: 'import',
+        timestamp: new Date().toISOString(),
+        message: `Imported ${stats.imported} new, updated ${stats.updated} sample items (${stats.total} total)`,
+      };
+      setSyncLogs((prev) => [log, ...prev]);
+
+      return stats;
     } finally {
       setIsSyncing(false);
     }
   };
 
-  const importFromCurrentProvider = async (): Promise<number> => {
+  const importFromCurrentProvider = async (): Promise<ImportStats> => {
     setIsSyncing(true);
     try {
       const remoteProducts = await activeProvider.importProducts();
-      const existingSkus = new Set(products.map((p) => p.sku));
-      const fresh = remoteProducts.filter((p) => !existingSkus.has(p.sku));
+      let importedCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
+      const now = new Date().toISOString();
 
-      if (fresh.length > 0) {
-        setProducts((prev) => [...fresh, ...prev]);
+      setProducts((prev) => {
+        const nextProducts = [...prev];
 
-        const log: SyncLog = {
-          id: `log_import_${Date.now()}`,
-          productId: 'bulk',
-          productName: `Import from ${activeProvider.name}`,
-          sku: 'BATCH',
-          provider: providerMode,
-          status: providerMode === 'demo' ? 'simulated' : 'success',
-          action: 'import',
-          timestamp: new Date().toISOString(),
-          message: `Imported ${fresh.length} products from ${activeProvider.name}`,
-        };
-        setSyncLogs((prev) => [log, ...prev]);
-      }
-      return fresh.length;
+        for (const remote of remoteProducts) {
+          // Look up by WooCommerce ID or SKU to avoid duplicating
+          const existingIndex = nextProducts.findIndex(
+            (p) =>
+              (remote.wooCommerceId && p.wooCommerceId === remote.wooCommerceId) ||
+              (remote.sku && p.sku.toUpperCase() === remote.sku.toUpperCase())
+          );
+
+          if (existingIndex >= 0) {
+            // Merge remote updates into local catalog record without breaking internal ID
+            const existing = nextProducts[existingIndex];
+            const merged: Product = {
+              ...existing,
+              wooCommerceId: remote.wooCommerceId || existing.wooCommerceId,
+              name: remote.name,
+              sku: remote.sku || existing.sku,
+              description: remote.description || existing.description,
+              shortDescription: remote.shortDescription || existing.shortDescription,
+              regularPrice: remote.regularPrice,
+              salePrice: remote.salePrice,
+              stockQuantity: remote.stockQuantity,
+              stockStatus: remote.stockStatus,
+              category: remote.category || existing.category,
+              imageUrl: remote.imageUrl || existing.imageUrl,
+              attributes: { ...existing.attributes, ...remote.attributes },
+              status: remote.status,
+              syncStatus: providerMode === 'demo' ? 'simulated' : 'synced',
+              lastSyncTimestamp: now,
+              updatedAt: now,
+            };
+
+            const completeness = calculateProductCompleteness(merged, categoryRules);
+            merged.completenessScore = completeness.score;
+            merged.missingFields = completeness.missingFields;
+
+            nextProducts[existingIndex] = merged;
+            updatedCount++;
+          } else {
+            // New product from WooCommerce
+            const newProduct: Product = {
+              ...remote,
+              id: `prod_wc_${remote.wooCommerceId || Date.now().toString(36)}`,
+              syncStatus: providerMode === 'demo' ? 'simulated' : 'synced',
+              lastSyncTimestamp: now,
+              createdAt: now,
+              updatedAt: now,
+            };
+            const completeness = calculateProductCompleteness(newProduct, categoryRules);
+            newProduct.completenessScore = completeness.score;
+            newProduct.missingFields = completeness.missingFields;
+
+            nextProducts.unshift(newProduct);
+            importedCount++;
+          }
+        }
+
+        return nextProducts;
+      });
+
+      const stats: ImportStats = {
+        imported: importedCount,
+        updated: updatedCount,
+        skipped: skippedCount,
+        total: remoteProducts.length,
+      };
+
+      const log: SyncLog = {
+        id: `log_import_${Date.now()}`,
+        productId: 'bulk',
+        productName: `Import from ${activeProvider.name}`,
+        sku: 'BATCH',
+        provider: providerMode,
+        status: providerMode === 'demo' ? 'simulated' : 'success',
+        action: 'import',
+        timestamp: now,
+        message:
+          providerMode === 'demo'
+            ? `Simulated import: ${stats.imported} added, ${stats.updated} updated (${stats.total} total)`
+            : `WooCommerce live import: ${stats.imported} new products imported, ${stats.updated} existing products updated (${stats.total} remote items)`,
+      };
+      setSyncLogs((prev) => [log, ...prev]);
+
+      return stats;
     } finally {
       setIsSyncing(false);
     }
@@ -349,7 +460,6 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
 
   const updateCategoryRules = (newRules: CategoryRule[]) => {
     setCategoryRules(newRules);
-    // Re-evaluate completeness for all products against new rules
     setProducts((prev) =>
       prev.map((p) => {
         const comp = calculateProductCompleteness(p, newRules);
@@ -382,11 +492,11 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
         syncLogs,
         categoryRules,
         providerMode,
-        credentials,
+        serverConfig,
         activeProvider,
         isSyncing,
         setProviderMode,
-        setCredentials,
+        refreshServerConfig,
         addProduct,
         updateProduct,
         deleteProduct,
