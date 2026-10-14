@@ -56,11 +56,32 @@ export interface DummyJsonProduct {
  * Maps internal Product to WooCommerce REST API product payload
  */
 export function mapProductToWooCommerce(product: Product): WooCommerceApiProduct {
-  const attributesPayload = Object.entries(product.attributes).map(([key, val]) => ({
-    name: key.charAt(0).toUpperCase() + key.slice(1),
-    visible: true,
-    options: [String(val)],
-  }));
+  let attributesPayload: Array<{
+    name: string;
+    visible: boolean;
+    variation?: boolean;
+    position?: number;
+    options: string[];
+  }> | undefined;
+
+  if (Array.isArray(product.productAttributes) && product.productAttributes.length > 0) {
+    attributesPayload = product.productAttributes.map((attr) => ({
+      name: attr.rawName || attr.name,
+      visible: attr.visible !== false,
+      variation: attr.variation,
+      position: attr.position,
+      options: attr.options,
+    }));
+  } else {
+    attributesPayload = Object.entries(product.attributes).map(([key, val]) => {
+      const v = String(val);
+      return {
+        name: key.charAt(0).toUpperCase() + key.slice(1),
+        visible: true,
+        options: v.includes(',') ? v.split(',').map((s) => s.trim()).filter(Boolean) : [v],
+      };
+    });
+  }
 
   const payload: WooCommerceApiProduct = {
     name: product.name,
@@ -82,20 +103,68 @@ export function mapProductToWooCommerce(product: Product): WooCommerceApiProduct
     payload.sale_price = String(product.salePrice);
   }
 
+  if (attributesPayload.length > 0) {
+    payload.attributes = attributesPayload;
+  }
+
   return payload;
 }
 
 /**
  * Maps WooCommerce REST API product to internal Product
  */
+function normalizeAttributeKey(rawName: string): string {
+  return rawName
+    .trim()
+    .replace(/^pa[_-]/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function humanizeAttributeLabel(rawName: string): string {
+  const stripped = rawName.replace(/^pa[_-]/i, '');
+  return stripped
+    .trim()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export function mapWooCommerceToProduct(wcProduct: WooCommerceApiProduct): Product {
   const attributes: Record<string, string | number | boolean> = {};
-  if (wcProduct.attributes) {
+  const productAttributes: Array<{
+    key: string;
+    name: string;
+    rawName: string;
+    options: string[];
+    visible: boolean;
+    variation: boolean;
+    position?: number;
+    source: 'woocommerce' | 'manual';
+  }> = [];
+
+  if (Array.isArray(wcProduct.attributes)) {
     for (const attr of wcProduct.attributes) {
-      const key = attr.name.toLowerCase().replace(/\s+/g, '-');
-      if (attr.options && attr.options.length > 0) {
-        attributes[key] = attr.options[0];
-      }
+      const rawName = attr.name || '';
+      if (!rawName) continue;
+      const key = normalizeAttributeKey(rawName);
+      const label = humanizeAttributeLabel(rawName);
+      const options = Array.isArray(attr.options) ? attr.options.filter(Boolean) : [];
+      if (options.length === 0) continue;
+
+      // Flat attributes: keep existing single-option behavior for backward compatibility
+      attributes[key] = options.length > 1 ? options.join(', ') : options[0];
+
+      productAttributes.push({
+        key,
+        name: label,
+        rawName,
+        options,
+        visible: attr.visible !== false,
+        variation: !!attr.variation,
+        position: attr.position,
+        source: 'woocommerce',
+      });
     }
   }
 
@@ -136,6 +205,7 @@ export function mapWooCommerceToProduct(wcProduct: WooCommerceApiProduct): Produ
     category: partialProduct.category!,
     imageUrl: partialProduct.imageUrl!,
     attributes: partialProduct.attributes!,
+    productAttributes: productAttributes.length > 0 ? productAttributes : undefined,
     status: partialProduct.status!,
     completenessScore: completeness.score,
     missingFields: completeness.missingFields,

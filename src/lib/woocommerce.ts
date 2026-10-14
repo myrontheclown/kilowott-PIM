@@ -6,23 +6,42 @@ if (process.env.NODE_ENV !== 'production' && !process.env.NODE_TLS_REJECT_UNAUTH
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
 
+// WordPress only performs WooCommerce API key authentication when the request arrives over
+// SSL (WC_REST_Authentication::authenticate() calls perform_basic_authentication() only when
+// is_ssl()). LocalWP serves its .local domains over HTTPS, so an http:// store URL silently
+// disables key auth and yields "woocommerce_rest_cannot_view" (HTTP 401). Upgrade local hosts.
+const LOCAL_DEV_HOST = /^(localhost|127\.0\.0\.1|\[::1\])$|\.local$|\.test$|\.localhost$/i;
+
+function normalizeStoreUrl(raw: string): string {
+  let url = raw.trim();
+  if (!url) return '';
+  // Default to HTTPS when no scheme is supplied.
+  if (!/^https?:\/\//i.test(url)) {
+    url = `https://${url}`;
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' && LOCAL_DEV_HOST.test(parsed.hostname)) {
+      parsed.protocol = 'https:';
+    }
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return url.replace(/\/+$/, '');
+  }
+}
+
 export class WooCommerceClient {
   private storeUrl: string;
   private consumerKey: string;
   private consumerSecret: string;
 
   constructor(credentials?: Partial<WooCommerceCredentials>) {
-    let rawUrl = (
+    const rawUrl =
       credentials?.storeUrl !== undefined
         ? credentials.storeUrl
-        : (process.env.WOOCOMMERCE_STORE_URL || '')
-    ).trim();
+        : (process.env.WOOCOMMERCE_STORE_URL || '');
 
-    // Normalize protocol if missing
-    if (rawUrl && !rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
-      rawUrl = `http://${rawUrl}`;
-    }
-    this.storeUrl = rawUrl.replace(/\/+$/, '');
+    this.storeUrl = normalizeStoreUrl(rawUrl);
     this.consumerKey = (
       credentials?.consumerKey !== undefined
         ? credentials.consumerKey
@@ -104,13 +123,9 @@ export class WooCommerceClient {
     const cleanEndpoint = endpoint.replace(/^\/+/, '');
     const urlObj = new URL(`${this.storeUrl}/wp-json/wc/v3/${cleanEndpoint}`);
 
-    // WooCommerce REST API v3 supports query string authentication. Over HTTP, WooCommerce requires
-    // query parameters because Basic Auth over HTTP is blocked by default in WordPress:
-    if (!urlObj.searchParams.has('consumer_key')) {
-      urlObj.searchParams.set('consumer_key', this.consumerKey);
-      urlObj.searchParams.set('consumer_secret', this.consumerSecret);
-    }
-
+    // Authenticate via the Authorization header only. Query-string credentials are deliberately
+    // avoided: they are only honored over SSL by WooCommerce and they would leak the consumer
+    // secret into URLs and server access logs.
     const headers: Record<string, string> = {
       'Authorization': this.getAuthHeader(),
       'Content-Type': 'application/json',
@@ -151,7 +166,7 @@ export class WooCommerceClient {
 
         if (data && typeof data === 'object') {
           if (data.code === 'woocommerce_rest_cannot_view') {
-            errorMessage = `Permission denied (HTTP 401): 'Sorry, you cannot list resources.' In WordPress admin, go to WooCommerce > Settings > Advanced > REST API, edit your API Key, and ensure the 'User' is an Administrator with 'Read/Write' permissions.`;
+            errorMessage = `Permission denied (HTTP 401): 'Sorry, you cannot list resources.' WooCommerce only authenticates REST API keys over HTTPS, so first confirm WOOCOMMERCE_STORE_URL uses https:// (LocalWP: https://<site>.local). If it already does, open WooCommerce > Settings > Advanced > REST API, edit the API Key, and ensure the selected 'User' has 'Read/Write' permissions.`;
           } else if (data.code === 'woocommerce_rest_cannot_create') {
             errorMessage = `Permission denied (HTTP 401): 'Sorry, you cannot create resources.' Ensure your API Key permissions are set to 'Read/Write' in WooCommerce > Settings > Advanced > REST API.`;
           } else if (data.code === 'woocommerce_rest_cannot_edit') {

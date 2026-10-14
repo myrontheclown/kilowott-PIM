@@ -342,7 +342,7 @@ export default function SettingsPage() {
 
           <div className="p-3 bg-slate-900 text-slate-200 font-mono text-xs rounded-lg overflow-x-auto select-all">
             <span className="text-slate-500"># LocalWP WooCommerce REST API Credentials</span><br />
-            WOOCOMMERCE_STORE_URL=http://your-site.local<br />
+            WOOCOMMERCE_STORE_URL=https://your-site.local<br />
             WOOCOMMERCE_CONSUMER_KEY=ck_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX<br />
             WOOCOMMERCE_CONSUMER_SECRET=cs_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX<br />
             NEXT_PUBLIC_DEMO_MODE=false
@@ -366,6 +366,16 @@ export default function SettingsPage() {
               </h4>
               <p className="text-[11px] text-slate-600">
                 Ensure Permalinks in <strong>Settings &gt; Permalinks</strong> are set to <strong>Post name</strong> (not &apos;Plain&apos;). WooCommerce REST API endpoints require pretty permalinks.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg bg-amber-50/60 border border-amber-200">
+              <h4 className="font-semibold text-slate-900 mb-1 flex items-center gap-1.5">
+                <Info className="h-3.5 w-3.5 text-amber-600" />
+                3. HTTPS Is Required for API Keys
+              </h4>
+              <p className="text-[11px] text-slate-600">
+                WooCommerce only authenticates REST API keys over <strong>HTTPS</strong>. A plain <code className="text-slate-700">http://</code> store URL is ignored and returns <code className="text-slate-700">woocommerce_rest_cannot_view</code> (HTTP 401). For LocalWP use <code className="text-slate-700">https://your-site.local</code>.
               </p>
             </div>
           </div>

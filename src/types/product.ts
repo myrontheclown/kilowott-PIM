@@ -36,6 +36,17 @@ export interface ProductAttributeValue {
   unit?: string;
 }
 
+export interface ProductAttribute {
+  key: string;        // normalized key, e.g. 'color'
+  name: string;       // display label, e.g. 'Color'
+  rawName: string;    // original name from source, e.g. 'pa_color' or 'Color'
+  options: string[];  // all option values
+  visible: boolean;
+  variation: boolean;
+  position?: number;
+  source: 'woocommerce' | 'manual';
+}
+
 export interface Product {
   id: string; // Internal UUID
   wooCommerceId?: number; // Remote WooCommerce product ID
@@ -50,6 +61,7 @@ export interface Product {
   category: ProductCategory;
   imageUrl: string;
   attributes: Record<string, string | number | boolean>;
+  productAttributes?: ProductAttribute[]; // Full attribute metadata from source
   status: ProductStatus;
   completenessScore: number; // 0 - 100
   missingFields: string[];

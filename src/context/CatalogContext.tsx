@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   CategoryRule,
   Product,
@@ -395,6 +395,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
               category: remote.category || existing.category,
               imageUrl: remote.imageUrl || existing.imageUrl,
               attributes: { ...existing.attributes, ...remote.attributes },
+              productAttributes: remote.productAttributes
+                ? remote.productAttributes.map((attr) => ({
+                    key: attr.key,
+                    name: attr.name,
+                    rawName: attr.rawName,
+                    options: attr.options,
+                    visible: attr.visible !== false,
+                    variation: !!attr.variation,
+                    position: attr.position,
+                    source: attr.source,
+                  }))
+                : existing.productAttributes,
               status: remote.status,
               syncStatus: providerMode === 'demo' ? 'simulated' : 'synced',
               lastSyncTimestamp: now,
@@ -412,6 +424,18 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
             const newProduct: Product = {
               ...remote,
               id: `prod_wc_${remote.wooCommerceId || Date.now().toString(36)}`,
+              productAttributes: remote.productAttributes
+                ? remote.productAttributes.map((attr) => ({
+                    key: attr.key,
+                    name: attr.name,
+                    rawName: attr.rawName,
+                    options: attr.options,
+                    visible: attr.visible !== false,
+                    variation: !!attr.variation,
+                    position: attr.position,
+                    source: attr.source,
+                  }))
+                : undefined,
               syncStatus: providerMode === 'demo' ? 'simulated' : 'synced',
               lastSyncTimestamp: now,
               createdAt: now,
@@ -484,6 +508,25 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       localStorage.removeItem(STORAGE_KEYS.MODE);
     }
   };
+
+  // Auto-load the WooCommerce catalog once per session when running in live mode with a
+  // configured store, so the Product Catalog reflects real remote products without a manual
+  // import. Importing merges into the local catalog and dedupes by WooCommerce ID / SKU.
+  const autoLoadedRemoteRef = useRef(false);
+  useEffect(() => {
+    if (isHydrated === false) return;
+    if (autoLoadedRemoteRef.current) return;
+    if (providerMode !== 'woocommerce') return;
+    if (!serverConfig?.isConfigured) return;
+    autoLoadedRemoteRef.current = true;
+    // Defer so the synchronous setIsSyncing inside the import does not run directly in the effect.
+    const handle = setTimeout(() => {
+      void importFromCurrentProvider().catch((err) => {
+        console.error('Automatic WooCommerce product import failed:', err);
+      });
+    }, 0);
+    return () => clearTimeout(handle);
+  }, [isHydrated, providerMode, serverConfig, importFromCurrentProvider]);
 
   return (
     <CatalogContext.Provider
